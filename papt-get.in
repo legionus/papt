@@ -1,0 +1,315 @@
+#!/bin/bash -efu
+# SPDX-License-Identifier: GPL-2.0-only
+
+. shell-error
+. shell-temp
+. shell-args
+. shell-signal
+. shell-getopt
+
+export LANG=C
+export LC_ALL=C
+
+show_help()
+{
+	cat <<-EOF
+	Usage: $PROG [options] [install|remove] packages...
+	   or: $PROG [options] dist-upgrade
+	   or: $PROG <apt-get command> [apt-get options]...
+
+	This utility allows to simultaneously download the packages required for updating the system.
+	This utility is a wrapper for apt-get.
+
+	Options:
+	  -y, --assume-yes      do not ask any questions;
+	  -p, --parallel=N      set the maximum number of parallel downloads;
+	  -v, --verbose         print a message for each action;
+	  -V, --version         print program version and exit;
+	  -h, --help            show this text and exit.
+
+	Report bugs to authors.
+
+	EOF
+	exit
+}
+
+show_version()
+{
+	cat <<-EOF
+	$PROG version @VERSION@
+	Written by Alexey Gladkov, Gleb Fotengauer-Malinovskiy.
+
+	Copyright (C) 2021  Alexey Gladkov <gladkov.alexey@gmail.com>
+	Copyright (C) 2021  Gleb Fotengauer-Malinovskiy <glebfm@altlinux.org>
+
+	This is free software; see the source for copying conditions.  There is NO
+	warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+	EOF
+	exit
+}
+
+get_apt_config()
+{
+	local get_eval get_name get_value
+	get_name="$1"
+	shift || return 1
+	get_value="$1"
+	shift || return 1
+
+	get_eval="$(apt-config shell "$get_value" "$get_name" </dev/null)" || return 1
+	eval "$get_eval"
+}
+
+cols=80
+rows=25
+ttysz()
+{
+	local esc
+	echo -ne "\e[s\e[1000;1000H\e[6n\e[u"
+	IFS=';[' read -s -t2 -dR esc rows cols || {
+		cols=80
+		rows=25
+	}
+}
+
+apt_list()
+{
+	local n
+	n="$1" && shift
+	[ "$#" -eq 0 ] &&
+		eval "apt_list_$n=()" ||
+		eval "apt_list_$n+=(\"\$@\")"
+}
+
+apt_list_print()
+{
+	local a
+	declare -n "a=apt_list_$1"
+	shift
+	if [ "${#a[@]}" -gt 0 ]; then
+		printf '%s\n' "$@"
+		printf '%s ' "${a[@]}" | fmt -w $cols | sed -e 's/^/  &/'
+	fi
+}
+
+apt_status()
+{
+	local n
+	n="$1" && shift
+	[ "$#" -eq 0 ] &&
+		eval "apt_status_$n=0" ||
+		eval "apt_status_$n=\"\$1\""
+}
+
+apt_archives=
+exit_handler()
+{
+	[ ! -d "$apt_archives/downloads" ] ||
+		rm -rf -- "$apt_archives/downloads"
+}
+
+GETOPT_ALLOW_UNKNOWN=1
+TEMP=`getopt -n $PROG -o p:,y,h,v,V  -l parallel:,yes,assume-yes,help,verbose,version -- "$@"` ||
+	show_usage
+eval set -- "$TEMP"
+
+confirm=-y
+parallel=5
+apt_args=()
+
+while :; do
+	case "$1" in
+		-p|--parallel)
+			parallel="$(opt_check_number "$1" "$2")"
+			shift
+			;;
+		-y|--yes|--assume-yes)
+			confirm=
+			;;
+		-v|--verbose)
+			verbose=-v
+			;;
+		-h|--help) show_help
+			;;
+		-V|--version) show_version
+			;;
+		--) shift; break
+			;;
+		*)
+			apt_args+=("$(quote_shell "$1")")
+			;;
+	esac
+	shift
+done
+
+if [ "$#" -eq 0 ]; then
+	message "opration required"
+	show_usage
+fi
+
+operation="$1"
+shift
+
+case "$operation" in
+	install|remove)
+		if [ "$#" -eq 0 ]; then
+			message "package names required"
+			show_usage
+		fi
+		;;
+	dist-upgrade)
+		;;
+	*)
+		exec apt-get "$operation" "${apt_args[@]}"
+		;;
+esac
+
+get_apt_config Dir::Cache::archives/d apt_archives
+apt_archives="${apt_archives%/}"
+
+[ -d "$apt_archives/downloads" ] ||
+	mkdir -- "$apt_archives/downloads"
+
+exec 4<"$apt_archives/downloads"
+flock -n 4 ||
+	fatal "another process is already using downloads."
+
+ttysz
+
+create_temporary workdir
+
+apt-get "$operation" "${apt_args[@]}" -o simple-output=yes -qq --print-uris "$@" > "$workdir/pkgs"
+
+for n in extra install remove upgrade downgrade keep hold essential; do
+	apt_list "$n"
+done
+
+for n in upgrade downgrade install reinstall replace remove disk_size; do
+	apt_status "$n"
+done
+
+total_size=0
+while read -r s; do
+	case "$s" in
+		apt-get:extra-list:*)        apt_list extra       ${s#apt-get:extra-list:};           continue ;;
+		apt-get:install-list:*)      apt_list install     ${s#apt-get:install-list:};         continue ;;
+		apt-get:remove-list:*)       apt_list remove      ${s#apt-get:remove-list:};          continue ;;
+		apt-get:upgrade-list:*)      apt_list upgrade     ${s#apt-get:upgrade-list:};         continue ;;
+		apt-get:downgrade-list:*)    apt_list downgrade   ${s#apt-get:downgrade-list:};       continue ;;
+		apt-get:keep-list:*)         apt_list keep        ${s#apt-get:keep-list:};            continue ;;
+		apt-get:hold-list:*)         apt_list hold        ${s#apt-get:hold-list:};            continue ;;
+		apt-get:essential-list:*)    apt_list essential   ${s#apt-get:essential-list:};       continue ;;
+		apt-get:status:upgrade:*)    apt_status upgrade   "${s#apt-get:status:upgrade:}";     continue ;;
+		apt-get:status:downgrade:*)  apt_status downgrade "${s#apt-get:status:downgrade:}";   continue ;;
+		apt-get:status:install:*)    apt_status install   "${s#apt-get:status:install:}";     continue ;;
+		apt-get:status:re-install:*) apt_status reinstall "${s#apt-get:status:re-install:}";  continue ;;
+		apt-get:status:replace:*)    apt_status replace   "${s#apt-get:status:replace:}";     continue ;;
+		apt-get:status:remove:*)     apt_status remove    "${s#apt-get:status:remove:}";      continue ;;
+		apt-get:status:disk-size:*)  apt_status disk_size "${s#apt-get:status:disk-size:}";   continue ;;
+	esac
+
+	csum="${s##* }"; s="${s% *}"
+	size="${s##* }"; s="${s% *}"
+	name="${s##* }"; s="${s% *}"
+
+	url="${s#\'}"; url="${url%\'}"
+
+	case "$url" in
+		copy:*)
+			url="file:${url#copy:}"
+			;;
+		file:*)
+			continue
+			;;
+	esac
+
+	algo=md5
+	if [ -z "${csum##*:*}" ]; then
+		algo="${csum%%:*}"
+		algo="${algo,,}"
+		csum="${csum##*:}"
+	fi
+
+	case "$algo" in
+		md5|md5sum)
+			algo=md5
+			;;
+		sha1|sha256|sha512)
+			;;
+		*)
+			fatal "unknown checksum algorithm: $algo"
+			;;
+	esac
+
+	printf '%s  %s\n' "$csum" "$apt_archives/downloads/$name" >> "$workdir/checksum.$algo"
+	{
+		printf 'url = %q\n' "$url"
+		printf 'output = %q\n' "$apt_archives/downloads/$name"
+	} >> "$workdir/uris"
+
+	total_size=$(( $total_size + $size ))
+done < "$workdir/pkgs"
+
+nothing=1
+for n in upgrade downgrade install reinstall replace remove; do
+	eval "v=\"\$apt_status_$n\""
+	if [ $v != 0 ]; then
+		nothing=
+		break
+	fi
+done
+
+if [ -n "$nothing" ]; then
+	message "nothing to do."
+	exit
+fi
+
+apt_list_print upgrade 'The following packages will be upgraded:'
+apt_list_print extra 'The following extra packages will be installed:'
+apt_list_print install 'The following NEW packages will be installed:'
+apt_list_print remove 'The following packages will be REMOVED:'
+apt_list_print keep 'The following packages have been kept back:'
+apt_list_print hold 'The following held packages will be changed:'
+apt_list_print downgrade 'The following packages will be DOWNGRADED:'
+apt_list_print essential \
+	"WARNING: The following essential packages will be removed" \
+	"This should NOT be done unless you know exactly what you are doing!"
+
+printf '%d upgraded, %d newly installed' "$apt_status_upgrade"  "$apt_status_install"
+[ "$apt_status_reinstall" -eq 0 ] || printf ', %d re-installed' "$apt_status_reinstall"
+[ "$apt_status_downgrade" -eq 0 ] || printf ', %d downgraded'   "$apt_status_downgrade"
+[ "$apt_status_replace"   -eq 0 ] || printf ', %d replaced'     "$apt_status_replace"
+[ "$apt_status_remove"    -eq 0 ] || printf ', %d removed'      "$apt_status_remove"
+printf '\n'
+
+printf 'Need to get %s of archives.\n' "$(numfmt --to=iec $total_size)"
+printf 'After unpacking %s of additional disk space will be used.\n' "$apt_status_disk_size"
+
+if [ -n "$confirm" ]; then
+	read -p 'Do you want to continue? [Y/n] ' ans
+	ans="${ans:-y}"
+
+	if [ "${ans,,}" != "y" ]; then
+		printf 'Abort.\n'
+		exit
+	fi
+fi
+
+if [ -s "$workdir/uris" ]; then
+	set_cleanup_handler exit_handler
+
+	curl -# -Z --parallel-max "$parallel" --parallel-immediate -K "$workdir/uris"
+
+	for checksum in $(set +f && printf '%s ' "$workdir"/checksum.*); do
+		"${checksum##*.}sum" --quiet -c "$checksum"
+
+		while read -r csum filename; do
+			mv $verbose -t "$apt_archives" -- "$filename"
+		done < "$checksum"
+	done
+fi
+
+set -o pipefail
+
+apt-get "$operation" "${apt_args[@]}" -y "$@" |
+	sed -n -e '/^Committing changes\.\.\./,$p'
