@@ -178,6 +178,7 @@ ttysz
 
 create_temporary workdir
 
+printf "Calculating changes...\n"
 apt-get "$operation" "${apt_args[@]}" -o simple-output=yes -qq --print-uris "$@" > "$workdir/pkgs"
 
 for n in extra install remove upgrade downgrade keep hold essential; do
@@ -260,7 +261,7 @@ for n in upgrade downgrade install reinstall replace remove; do
 done
 
 if [ -n "$nothing" ]; then
-	message "nothing to do."
+	printf 'Nothing to do.\n'
 	exit
 fi
 
@@ -298,7 +299,13 @@ fi
 if [ -s "$workdir/uris" ]; then
 	set_cleanup_handler exit_handler
 
-	curl -# -Z --parallel-max "$parallel" --parallel-immediate -K "$workdir/uris"
+	printf 'Downloading packages...\n'
+
+	curl -# \
+		-Z --parallel-max "$parallel" --parallel-immediate \
+		-K "$workdir/uris"
+
+	printf 'Check the checksums...\n'
 
 	for checksum in $(set +f && printf '%s ' "$workdir"/checksum.*); do
 		"${checksum##*.}sum" --quiet -c "$checksum"
@@ -309,7 +316,8 @@ if [ -s "$workdir/uris" ]; then
 	done
 fi
 
-set -o pipefail
+printf 'Applying changes...\n'
 
+set -o pipefail
 apt-get "$operation" "${apt_args[@]}" -y "$@" |
 	sed -n -e '/^Committing changes\.\.\./,$p'
