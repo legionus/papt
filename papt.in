@@ -59,11 +59,13 @@ if ($help) {
 Usage: $progname [options] [install|remove] packages...
    or: $progname [options] dist-upgrade
    or: $progname <apt-get command> [apt-get options]...
+   or: $progname (search|show|showpkg|policy|depends|whatdepends) [apt-cache options]...
+   or: $progname mark <apt-mark command> [apt-mark options]...
 EOF
 	print <<'EOF';
 
 This utility allows to simultaneously download the packages required for updating the system.
-This utility is a wrapper for apt-get.
+This utility is a wrapper for apt-get, apt-cache and apt-mark.
 
 Options:
   -y, --assume-yes      do not ask any questions;
@@ -100,6 +102,10 @@ if ($command =~ /^(install|remove)$/) {
 	die "Package names required" if !@ARGV;
 } elsif ($command =~ /^(dist-upgrade)$/) {
 	;
+} elsif ($command =~ /^(mark)$/) {
+	exec 'apt-mark', @ARGV;
+} elsif ($command =~ /^(search|show|showpkg|policy|depends|whatdepends)$/) {
+	exec 'apt-cache', $command, @ARGV;
 } else {
 	exec 'apt-get', $command, @ARGV;
 }
