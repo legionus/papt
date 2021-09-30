@@ -17,6 +17,7 @@ use WWW::Curl::Multi;
 my $apt_dir_archives = '';
 my $apt_dir_downloads = '';
 
+(our $progname = $0) =~ s#.*/##;
 our $verbose = 0;
 our $parallel = 5;
 our $confirmed = 0;
@@ -30,6 +31,48 @@ END {
 		closedir $dh;
 	}
 }
+
+sub display_help {
+	print <<EOF;
+Usage: $progname [options] [install|remove] packages...
+   or: $progname [options] dist-upgrade
+   or: $progname <apt-get command> [apt-get options]...
+   or: $progname (search|show|showpkg|policy|depends|whatdepends) [apt-cache options]...
+   or: $progname mark <apt-mark command> [apt-mark options]...
+EOF
+	print <<'EOF';
+
+This utility allows to simultaneously download the packages required for updating the system.
+This utility is a wrapper for apt-get, apt-cache and apt-mark.
+
+Options:
+  --download-method=METHOD   chooses the download method (curl or libcurl);
+  -y, --assume-yes           do not ask any questions;
+  -p, --parallel=N           set the maximum number of parallel downloads;
+  -v, --verbose              print a message for each action;
+  -V, --version              print program version and exit;
+  -h, --help                 show this text and exit.
+
+Report bugs to authors.
+
+EOF
+	exit;
+}
+
+sub display_version {
+	print "$progname version ", '@VERSION@', "\n";
+	print <<'EOF';
+Written by Alexey Gladkov, Gleb Fotengauer-Malinovskiy.
+
+Copyright (C) 2021  Alexey Gladkov <gladkov.alexey@gmail.com>
+Copyright (C) 2021  Gleb Fotengauer-Malinovskiy <glebfm@altlinux.org>
+
+This is free software; see the source for copying conditions.  There is NO
+warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+EOF
+	exit;
+}
+
 
 sub download_libcurl {
 	my ($files) = @_;
@@ -163,13 +206,49 @@ sub confirmation {
 	}
 }
 
+sub display_lists {
+	my ($info) = @_;
+
+	my %desc = (
+		'downgrade-list' => "\nThe following packages will be DOWNGRADED:",
+		'essential-list' => "\nWARNING: The following essential packages will be removed\nThis should NOT be done unless you know exactly what you are doing!",
+		'extra-list'     => "\nThe following extra packages will be installed:",
+		'hold-list'      => "\nThe following held packages will be changed:",
+		'install-list'   => "\nThe following NEW packages will be installed:",
+		'keep-list'      => "\nThe following packages have been kept back:",
+		'remove-list'    => "\nThe following packages will be REMOVED:",
+		'upgrade-list'   => "\nThe following packages will be upgraded:",
+	);
+
+	foreach my $key (qw/ downgrade-list essential-list extra-list hold-list install-list keep-list remove-list upgrade-list /) {
+		next unless @{$info->{$key}};
+		say $desc{$key};
+		say wrap "\t", "\t", join " ", @{$info->{$key}};
+	}
+	say "";
+}
+
+sub display_summary {
+	my ($info) = @_;
+
+	my $summary = "Summary";
+
+	$summary .= ": $info->{'upgrade'} upgraded, $info->{'install'} newly installed";
+	$summary .= ", $info->{'re-install'} re-installed" if $info->{'re-install'};
+	$summary .= ", $info->{'downgrade'} downgraded"    if $info->{'downgrade'};
+	$summary .= ", $info->{'replace'} replaced"        if $info->{'replace'};
+	$summary .= ", $info->{'remove'} removed"          if $info->{'remove'};
+
+	say $summary;
+	say "";
+
+	say "Need to get ", format_bytes($info->{'total-size'}), " of archives.";
+	say "After unpacking $info->{'disk-size'} of additional disk space will be used.";
+}
+
 require 'sys/ioctl.ph';
 
-$0 =~ /^(?:.*\/)?([^\/]+)$/;
-
-my $progname = $1;
 my $version = 0;
-my $help = 0;
 
 GetOptions(
 	"p=i" => \$parallel,
@@ -184,54 +263,13 @@ GetOptions(
 	"yes" => \$confirmed,
 	"assume-yes" => \$confirmed,
 
-	"V" => \$version,
-	"version" => \$version,
+	"V" => \&display_version,
+	"version" => \&display_version,
 
-	"h" => \$help,
-	"help" => \$help,
+	"h" => \&display_help,
+	"help" => \&display_help,
 ) or
 	die "error in command line arguments";
-
-if ($help) {
-	print <<EOF;
-Usage: $progname [options] [install|remove] packages...
-   or: $progname [options] dist-upgrade
-   or: $progname <apt-get command> [apt-get options]...
-   or: $progname (search|show|showpkg|policy|depends|whatdepends) [apt-cache options]...
-   or: $progname mark <apt-mark command> [apt-mark options]...
-EOF
-	print <<'EOF';
-
-This utility allows to simultaneously download the packages required for updating the system.
-This utility is a wrapper for apt-get, apt-cache and apt-mark.
-
-Options:
-  --download-method=METHOD   chooses the download method (curl or libcurl);
-  -y, --assume-yes           do not ask any questions;
-  -p, --parallel=N           set the maximum number of parallel downloads;
-  -v, --verbose              print a message for each action;
-  -V, --version              print program version and exit;
-  -h, --help                 show this text and exit.
-
-Report bugs to authors.
-
-EOF
-	exit;
-}
-
-if ($version) {
-	print "$progname version ", '@VERSION@', "\n";
-	print <<'EOF';
-Written by Alexey Gladkov, Gleb Fotengauer-Malinovskiy.
-
-Copyright (C) 2021  Alexey Gladkov <gladkov.alexey@gmail.com>
-Copyright (C) 2021  Gleb Fotengauer-Malinovskiy <glebfm@altlinux.org>
-
-This is free software; see the source for copying conditions.  There is NO
-warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
-EOF
-	exit;
-}
 
 die "Opration required" if !@ARGV;
 
@@ -344,38 +382,8 @@ if ($everything == 0) {
 	exit;
 }
 
-my %desc = (
-	'downgrade-list' => "\nThe following packages will be DOWNGRADED:",
-	'essential-list' => "\nWARNING: The following essential packages will be removed\nThis should NOT be done unless you know exactly what you are doing!",
-	'extra-list'     => "\nThe following extra packages will be installed:",
-	'hold-list'      => "\nThe following held packages will be changed:",
-	'install-list'   => "\nThe following NEW packages will be installed:",
-	'keep-list'      => "\nThe following packages have been kept back:",
-	'remove-list'    => "\nThe following packages will be REMOVED:",
-	'upgrade-list'   => "\nThe following packages will be upgraded:",
-);
-
-foreach my $key (qw/ downgrade-list essential-list extra-list hold-list install-list keep-list remove-list upgrade-list /) {
-	next unless @{$info{$key}};
-	say $desc{$key};
-	say wrap "\t", "\t", join " ", @{$info{$key}};
-}
-say "";
-
-my $summary = "Summary";
-
-$summary .= ": $info{'upgrade'} upgraded, $info{'install'} newly installed";
-$summary .= ", $info{'re-install'} re-installed" if $info{'re-install'};
-$summary .= ", $info{'downgrade'} downgraded"    if $info{'downgrade'};
-$summary .= ", $info{'replace'} replaced"        if $info{'replace'};
-$summary .= ", $info{'remove'} removed"          if $info{'remove'};
-
-say $summary;
-say "";
-
-say "Need to get ", format_bytes($info{'total-size'}), " of archives.";
-say "After unpacking $info{'disk-size'} of additional disk space will be used.";
-
+display_lists \%info;
+display_summary \%info;
 confirmation;
 
 my $n = keys %{$info{'missing-files'}};
