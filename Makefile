@@ -1,5 +1,5 @@
 PROJECT = papt
-VERSION = 0.1.0
+VERSION = 0.2.0
 
 PROGRAMS = papt
 MAN1PAGES = $(PROGRAMS:=.1)
