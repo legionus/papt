@@ -11,9 +11,16 @@ use Crypt::Digest qw/ digest_file_hex /;
 use Number::Format qw/ :subs /;
 use AptPkg::Config '$_config';
 use Getopt::Long qw/ :config bundling require_order pass_through /;
+use WWW::Curl::Easy;
+use WWW::Curl::Multi;
 
 my $apt_dir_archives = '';
 my $apt_dir_downloads = '';
+
+our $verbose = 0;
+our $parallel = 5;
+our $confirmed = 0;
+our $download_method = 'libcurl';
 
 END {
 	if (defined $apt_dir_downloads && length $apt_dir_downloads && opendir my $dh, $apt_dir_downloads) {
@@ -24,20 +31,137 @@ END {
 	}
 }
 
+sub download_libcurl {
+	my ($files) = @_;
+
+	my @missing_by_size = reverse sort { $files->{$a}->{size} <=> $files->{$b}->{size} } keys %$files;
+
+	my $curlm = WWW::Curl::Multi->new;
+
+	my %active;
+	my $queue = 0;
+
+	while (@missing_by_size || $queue > 0) {
+		while (@missing_by_size && $queue < $parallel) {
+			my $num = shift @missing_by_size;
+			my $url =  $files->{$num}->{url};
+			my $filename = "$apt_dir_downloads/$files->{$num}->{name}";
+
+			say "> Download: $url" if $verbose;
+
+			open my $fh, '>', $filename or
+				die "Can't open: $filename: $!";
+			binmode $fh;
+
+			my $curl = WWW::Curl::Easy->new;
+
+			$curl->setopt(CURLOPT_PRIVATE, $num + 1);
+			$curl->setopt(CURLOPT_MAXCONNECTS, $parallel);
+			$curl->setopt(CURLOPT_URL, $url);
+			$curl->setopt(CURLOPT_FILE, $fh);
+
+			$curlm->add_handle($curl);
+
+			$active{$num} = {
+				'out'  => $fh,
+				'curl' => $curl,
+				'url'  => $url,
+			};
+
+			$queue++;
+		}
+
+		$curlm->perform;
+
+		while (my ($id, $value) = $curlm->info_read) {
+			$id--;
+
+			say "* Received: $active{$id}->{url}";
+
+			close $active{$id}->{out};
+			delete $active{$id}->{curl};
+			delete $active{$id};
+
+			$queue--;
+		}
+	}
+}
+
+sub download_curl {
+	my ($files) = @_;
+
+	my @missing_by_size = reverse sort { $files->{$a}->{size} <=> $files->{$b}->{size} } keys %$files;
+
+	open my $fh, "|-", "curl", "-#", "--parallel-immediate", "--parallel-max", "$parallel", "-Z", "-K", "-" or
+		die "Can't start curl: $!";
+
+	while (my ($id, $meta) = each %$files) {
+		say $fh "url = $meta->{url}";
+		say $fh "output = $apt_dir_downloads/$meta->{name}";
+	}
+	close $fh;
+}
+
+sub download {
+	$_ = $download_method;
+
+	SWITCH: {
+		if (/^libcurl$/) {
+			download_libcurl @_;
+			last SWITCH;
+		}
+		if (/^curl$/) {
+			download_curl @_;
+			last SWITCH;
+		}
+		die "unknown download method: $_";
+	}
+}
+
+sub checksums {
+	my ($files) = @_;
+
+	while (my ($id, $meta) = each %$files) {
+		my $algo = "MD5";
+
+		SWITCH: {
+			$_ = $meta->{hash};
+
+			if (/^(MD5|MD5SUM):/i) {
+				last SWITCH;
+			}
+			if (/^(SHA1|SHA256|SHA512):/i) {
+				$algo = uc($1);
+				last SWITCH;
+			}
+			if (/^([^:]+):.*/) {
+				die "Unknown checksum algorithm: $1";
+			}
+		}
+
+		my $digest_hex = digest_file_hex $algo, "$apt_dir_downloads/$meta->{name}";
+
+		die "$meta->{name}: expected checksum \`$_', but got \`$digest_hex'"
+			if $digest_hex ne $_;
+
+		rename "$apt_dir_downloads/$meta->{name}", "$apt_dir_archives/$meta->{name}" or
+			die "Unable to move package from downloads directory: $!";
+	}
+}
+
 require 'sys/ioctl.ph';
 
 $0 =~ /^(?:.*\/)?([^\/]+)$/;
 
 my $progname = $1;
-my $verbose = 0;
-my $parallel = 5;
-my $confirmed = 0;
 my $version = 0;
 my $help = 0;
 
 GetOptions(
 	"p=i" => \$parallel,
 	"parallel=i" => \$parallel,
+
+	"download-method=s" => \$download_method,
 
 	"v+" => \$verbose,
 	"verbose+"  => \$verbose,
@@ -68,11 +192,12 @@ This utility allows to simultaneously download the packages required for updatin
 This utility is a wrapper for apt-get, apt-cache and apt-mark.
 
 Options:
-  -y, --assume-yes      do not ask any questions;
-  -p, --parallel=N      set the maximum number of parallel downloads;
-  -v, --verbose         print a message for each action;
-  -V, --version         print program version and exit;
-  -h, --help            show this text and exit.
+  --download-method=METHOD   chooses the download method (curl or libcurl);
+  -y, --assume-yes           do not ask any questions;
+  -p, --parallel=N           set the maximum number of parallel downloads;
+  -v, --verbose              print a message for each action;
+  -V, --version              print program version and exit;
+  -h, --help                 show this text and exit.
 
 Report bugs to authors.
 
@@ -109,6 +234,9 @@ if ($command =~ /^(install|remove)$/) {
 } else {
 	exec 'apt-get', $command, @ARGV;
 }
+
+die "Unknown download method: $download_method" unless $download_method =~ /^(curl|libcurl)$/;
+say "Download method: $download_method" if $verbose;
 
 $_config->init();
 $apt_dir_archives = $_config->get("Dir::Cache::archives/d");
@@ -150,7 +278,7 @@ my %info = (
 	're-install'     => 0,
 	'downgrade'      => 0,
 	'total-size'     => 0,
-	'missing-files'  => [],
+	'missing-files'  => {},
 );
 
 say "Calculating changes...";
@@ -158,6 +286,7 @@ say "Calculating changes...";
 open my $fh, "-|", "apt-get", $command, "-o", "simple-output=yes", "-q=2", "--print-uris", @ARGV or
 	die "Can't start apt-get: $!";
 
+my $i = 0;
 while (<$fh>) {
 	SWITCH: {
 		if (/^apt-get:((?:extra|install|remove|upgrade|downgrade|keep|hold|essential)-list):(.*)$/) {
@@ -173,16 +302,18 @@ while (<$fh>) {
 			last SWITCH;
 		}
 
-		/^'(?<url>[^']+)' (?<filename>\S+) (?<size>\d+) (?<hash>[A-Fa-f0-9]+)$/;
+		/^'(?<url>[^']+)' (?<name>\S+) (?<size>\d+) (?<hash>[A-Fa-f0-9]+)$/;
 
 		last SWITCH if $+{'url'} =~ /^file:/;
 
-		push @{$info{'missing-files'}}, {
-				'url' => $+{'url'},
-				'filename' => $+{'filename'},
-				'size' => $+{'size'},
-				'hash' => $+{'hash'}
+		$info{'missing-files'}->{$i} = {
+			'url'  => $+{'url'},
+			'name' => $+{'name'},
+			'size' => $+{'size'},
+			'hash' => $+{'hash'}
 		};
+		$info{'missing-files'}->{$i}->{url} =~ s/^copy:/file:/;
+		$i++;
 
 		$info{'total-size'} += $+{'size'};
 	}
@@ -244,50 +375,16 @@ unless ($confirmed) {
 	}
 }
 
-if (@{$info{'missing-files'}}) {
+my $n = keys %{$info{'missing-files'}};
+
+if ($n > 0) {
 	say "";
 
-	say "Downloading packages...";
+	say "Downloading $n packages...";
+	download $info{'missing-files'};
 
-	open $fh, "|-", "curl", "-#", "--parallel-immediate", "--parallel-max", "$parallel", "-Z", "-K", "-" or
-		die "Can't start curl: $!";
-
-	foreach my $missing (@{$info{'missing-files'}}) {
-		$missing->{url} =~ s/^copy:/file:/;
-
-		say $fh "url = $missing->{url}";
-		say $fh "output = $apt_dir_downloads/$missing->{filename}";
-	}
-	close $fh;
-
-	say "Check the checksums...";
-
-	foreach my $missing (@{$info{'missing-files'}}) {
-		my $algo = "MD5";
-
-		SWITCH: {
-			$_ = $missing->{hash};
-
-			if (/^(MD5|MD5SUM):/i) {
-				last SWITCH;
-			}
-			if (/^(SHA1|SHA256|SHA512):/i) {
-				$algo = uc($1);
-				last SWITCH;
-			}
-			if (/^([^:]+):.*/) {
-				die "Unknown checksum algorithm: $1";
-			}
-		}
-
-		my $digest_hex = digest_file_hex $algo, "$apt_dir_downloads/$missing->{filename}";
-
-		die "$missing->{filename}: expected checksum \`$missing->{hash}', but got \`$digest_hex'"
-			if $digest_hex ne $missing->{hash};
-
-		rename "$apt_dir_downloads/$missing->{filename}", "$apt_dir_archives/$missing->{filename}" or
-			die "Unable to move package from downloads directory: $!";
-	}
+	say "Validating checksums...";
+	checksums $info{'missing-files'};
 }
 
 say "Applying changes...";
