@@ -23,6 +23,8 @@ our $parallel = 5;
 our $confirmed = 0;
 our $download_method = 'libcurl';
 
+our $winsize = '';
+
 END {
 	if (defined $apt_dir_downloads && length $apt_dir_downloads && opendir my $dh, $apt_dir_downloads) {
 		while (readdir $dh) {
@@ -246,6 +248,53 @@ sub display_summary {
 	say "After unpacking $info->{'disk-size'} of additional disk space will be used.";
 }
 
+sub exec_apt_get {
+	unless (open PTMX, '+<', '/dev/ptmx') {
+		exec "apt-get", @_ or die "Unable to exec apt-get";
+	}
+
+	my $tmp = '';
+	ioctl PTMX, &TIOCGPTN, $tmp or die "ioctl(TIOCGPTN): $!";
+
+	my $pts = unpack 'i', $tmp;
+
+	say "Using /dev/pts/$pts\n" if $verbose;
+
+	# unlockpt
+	my $unlock = pack 'i', 0;
+	ioctl PTMX, &TIOCSPTLCK, $unlock or die "ioctl(TIOCSPTLCK): $!";
+
+	my $pid = fork;
+	die "Unable to fork: $!" unless defined $pid;
+
+	if (!$pid) {
+		open STDIN,  "+<", "/dev/pts/$pts" or die "Unable to re-open stdin to /dev/pts/$pts: $!";
+
+		if (length $winsize > 0) {
+			ioctl STDIN, &TIOCSWINSZ, $winsize or die "ioctl(TIOCSWINSZ): $!";
+		}
+
+		open STDOUT, '>&', STDIN  or die "can't dup stdin: $!" ;
+		open STDERR, ">&", STDOUT or die "can't dup stdout: $!";
+
+		exec "apt-get", @_ or die "Unable to exec apt-get";
+	}
+
+	my $rin = '';
+	vec($rin, fileno(PTMX), 1) = 1;
+
+	die "select: $!" if select(my $rout = $rin, undef, undef, undef) == -1;
+
+	while (<PTMX>) {
+		next if /^apt-get:/;
+		print;
+	}
+
+	close PTMX;
+	wait;
+	exit $?;
+}
+
 require 'sys/ioctl.ph';
 
 my $version = 0;
@@ -305,8 +354,6 @@ if (! flock $dwn, LOCK_EX|LOCK_NB) {
 	say "Another process is already using downloads.";
 	exit;
 }
-
-my $winsize = '';
 
 ioctl STDOUT, &TIOCGWINSZ, $winsize or die "ioctl(TIOCGWINSZ): $!";
 my ($rows, $cols, $xpixel, $ypixel) = unpack 'S4', $winsize;
@@ -399,50 +446,4 @@ if ($n > 0) {
 }
 
 say "Applying changes...";
-
-if (open PTMX, '+<', '/dev/ptmx') {
-	my $tmp = '';
-	ioctl PTMX, &TIOCGPTN, $tmp or die "ioctl(TIOCGPTN): $!";
-
-	my $pts = unpack 'i', $tmp;
-
-	say "Using /dev/pts/$pts\n" if $verbose;
-
-	# unlockpt
-	my $unlock = pack 'i', 0;
-	ioctl PTMX, &TIOCSPTLCK, $unlock or die "ioctl(TIOCSPTLCK): $!";
-
-	my $pid = fork;
-	die "Unable to fork: $!" unless defined $pid;
-
-	if (!$pid) {
-		open STDIN,  "+<", "/dev/pts/$pts" or die "Unable to re-open stdin to /dev/pts/$pts: $!";
-
-		if (length $winsize > 0) {
-			ioctl STDIN, &TIOCSWINSZ, $winsize or die "ioctl(TIOCSWINSZ): $!";
-		}
-
-		open STDOUT, '>&', STDIN  or die "can't dup stdin: $!" ;
-		open STDERR, ">&", STDOUT or die "can't dup stdout: $!";
-
-		exec "apt-get", $command, "-y", "-o", "simple-output=yes", @ARGV or
-			die "Unable to exec apt-get";
-	}
-
-	my $rin = '';
-	vec($rin, fileno(PTMX), 1) = 1;
-
-	die "select: $!" if select(my $rout = $rin, undef, undef, undef) == -1;
-
-	while (<PTMX>) {
-		next if /^apt-get:/;
-		print;
-	}
-
-	close PTMX;
-	wait;
-	exit $?;
-}
-
-exec "apt-get", $command, "-y", "-o", "simple-output=yes", @ARGV or
-	die "Unable to exec apt-get";
+exec_apt_get $command, "-y", "-o", "simple-output=yes", @ARGV;
