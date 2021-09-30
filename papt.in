@@ -149,6 +149,20 @@ sub checksums {
 	}
 }
 
+sub confirmation {
+	return if $confirmed;
+	say "";
+
+	print "Do you want to continue? [Y/n] ";
+	my $answer = <STDIN>;
+	chomp $answer;
+
+	if (length $answer > 0 and lc $answer ne "y") {
+		say "Abort.";
+		exit;
+	}
+}
+
 require 'sys/ioctl.ph';
 
 $0 =~ /^(?:.*\/)?([^\/]+)$/;
@@ -362,18 +376,7 @@ say "";
 say "Need to get ", format_bytes($info{'total-size'}), " of archives.";
 say "After unpacking $info{'disk-size'} of additional disk space will be used.";
 
-unless ($confirmed) {
-	say "";
-
-	print "Do you want to continue? [Y/n] ";
-	my $answer = <STDIN>;
-	chomp $answer;
-
-	if (length $answer > 0 and lc $answer ne "y") {
-		say "Abort.";
-		exit;
-	}
-}
+confirmation;
 
 my $n = keys %{$info{'missing-files'}};
 
