@@ -401,9 +401,10 @@ while (<$fh>) {
 			last SWITCH;
 		}
 
-		/^'(?<url>[^']+)' (?<name>\S+) (?<size>\d+) (?<hash>[A-Fa-f0-9]+)$/;
+		next unless /^'(?<url>[^']+)' (?<name>\S+) (?<size>\d+) (?<hash>[A-Fa-f0-9]+)$/;
 
 		last SWITCH if $+{'url'} =~ /^file:/;
+		$+{'url'} =~ s/^copy:/file:/;
 
 		$info{'missing-files'}->{$i} = {
 			'url'  => $+{'url'},
@@ -411,7 +412,6 @@ while (<$fh>) {
 			'size' => $+{'size'},
 			'hash' => $+{'hash'}
 		};
-		$info{'missing-files'}->{$i}->{url} =~ s/^copy:/file:/;
 		$i++;
 
 		$info{'total-size'} += $+{'size'};
