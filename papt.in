@@ -38,6 +38,7 @@ sub display_help {
 	print <<EOF;
 Usage: $progname [options] [install|remove] packages...
    or: $progname [options] dist-upgrade
+   or: $progname query [papt-query options] regex...
    or: $progname <apt-get command> [apt-get options]...
    or: $progname (search|show|showpkg|policy|depends|whatdepends) [apt-cache options]...
    or: $progname mark <apt-mark command> [apt-mark options]...
@@ -297,8 +298,6 @@ sub exec_apt_get {
 
 require 'sys/ioctl.ph';
 
-my $version = 0;
-
 GetOptions(
 	"p=i" => \$parallel,
 	"parallel=i" => \$parallel,
@@ -328,6 +327,8 @@ if ($command =~ /^(install|remove)$/) {
 	die "Package names required" if !@ARGV;
 } elsif ($command =~ /^(dist-upgrade)$/) {
 	;
+} elsif ($command =~ /^(query)$/) {
+	exec 'papt-query', @ARGV;
 } elsif ($command =~ /^(mark)$/) {
 	exec 'apt-mark', @ARGV;
 } elsif ($command =~ /^(search|show|showpkg|policy|depends|whatdepends)$/) {

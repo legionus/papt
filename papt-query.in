@@ -1,0 +1,173 @@
+#!/usr/bin/perl
+
+use 5.010;
+use strict;
+use warnings;
+
+use RPM2;
+use AptPkg::Config '$_config';
+use Getopt::Long;
+
+use constant RPM_HEADER_MAGIC => pack("C3", 0x8e, 0xad, 0xe8);
+
+(our $progname = $0) =~ s#.*/##;
+
+my $modifiers = '';
+our %pattern;
+our @result;
+our %size = (
+	'name' => 0,
+);
+
+sub display_help {
+	print <<EOF;
+Usage: $progname [options] regex...
+EOF
+	print <<'EOF';
+
+This utility searchs on all available package lists for the regex pattern given.
+It shows packages that match all regexps specified in the arguments. The utility
+searches by name, summary, description and provides list.
+
+You can use a prefix to specify what to apply the regexp to:
+
+%(name|version|release|summary|description|group|requires|provides|files):REGEX
+
+Options:
+  -i, --ignore-case   ignore case distinctions in patterns and input data, so
+                      that characters that differ only in case match each other;
+  -V, --version       print program version and exit;
+  -h, --help          show this text and exit.
+
+Report bugs to authors.
+
+EOF
+	exit;
+}
+
+sub display_version {
+	print "$progname version ", '@VERSION@', "\n";
+	print <<'EOF';
+Written by Alexey Gladkov.
+
+Copyright (C) 2021  Alexey Gladkov <gladkov.alexey@gmail.com>
+
+This is free software; see the source for copying conditions.  There is NO
+warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+EOF
+	exit;
+}
+
+sub match_list {
+	my ($pkg, $name, $word) = @_;
+	foreach ($pkg->tag($name)) {
+		return 1 if $_ =~ $pattern{$word};
+	}
+	return 0;
+}
+
+sub match_files {
+	my ($pkg, $word) = @_;
+	foreach ($pkg->files) {
+		return 1 if $_ =~ $pattern{$word};
+	}
+	return 0;
+}
+
+sub match {
+	my ($pkg, $name, $word) = @_;
+	$name ne 'files'
+		? match_list $pkg, $name, $word
+		: match_files $pkg, $word;
+}
+
+sub process_header {
+	my ($pkg, $args) = @_;
+	my @argv = @{ $args };
+
+	my $pkg_name = $pkg->tag('NAME');
+
+	foreach (@argv) {
+		SWITCH: {
+			if (/^%(name|version|release|summary|description|group|requires|provides|files):(.*)$/) {
+				return if ! match $pkg, $1, $_;
+				last SWITCH;
+			}
+
+			my $re = $pattern{$_};
+
+			return if $pkg_name !~ $re &&
+				$pkg->tag('summary') !~ $re &&
+				$pkg->tag('description') !~ $re &&
+				! match_list $pkg, 'provides', $_;
+		}
+	}
+
+	push @result, $pkg;
+
+	my $sz = length $pkg_name;
+	$size{'name'} = $sz if $size{'name'} < $sz;
+}
+
+GetOptions(
+	"i" => sub { $modifiers .= 'i' unless $modifiers =~ /i/ },
+	"ignore-case" => sub { $modifiers .= 'i' unless $modifiers =~ /i/ },
+
+	"V" => \&display_version,
+	"version" => \&display_version,
+
+	"h" => \&display_help,
+	"help" => \&display_help,
+) or
+	die "error in command line arguments";
+
+die "search terms required" if !@ARGV;
+
+foreach (@ARGV) {
+	SWITCH: {
+		if (/^%(name|version|release|summary|description|group|requires|provides|files):(.*)$/) {
+			$pattern{$_} = qr/(?n$modifiers)$2/;
+			last SWITCH;
+		}
+		$pattern{$_} = qr/(?n$modifiers)$_/;
+	}
+}
+
+$_config->init;
+my $apt_dir_lists = $_config->get("Dir::State::lists/d");
+
+opendir my $dh, $apt_dir_lists or die "Unable to open directory: $apt_dir_lists: $!";
+while (readdir $dh) {
+	my $file = "$apt_dir_lists/$_";
+	next unless -f $file and -r $file and -s $file;
+
+	my $buffer = '';
+
+	open my $fh, '<', $file or die "Unable to open file: $file: $!";
+	my $nread = read $fh, $buffer, 3, 0 or die "Unable to read from $file: $!";
+	close $fh;
+
+	next unless $nread == 3 and $buffer eq RPM_HEADER_MAGIC;
+
+	process_header $_, \@ARGV foreach RPM2->open_hdlist($file);
+}
+closedir $dh;
+
+sub order {
+	my $x = $a->tag('GROUP') cmp $b->tag('GROUP');
+	$x = $a->tag('NAME') cmp $b->tag('NAME') if !$x;
+	return $x;
+}
+
+my $group = '';
+foreach my $pkg (sort order @result) {
+	my $pkg_group = $pkg->tag('GROUP');
+
+	if ($group ne $pkg_group) {
+		say "" if length $group;
+		say "Group: $pkg_group";
+		$group = $pkg_group;
+	}
+
+	printf " %-".$size{'name'}."s - %s\n", $pkg->tag('NAME'), $pkg->tag('SUMMARY');
+}

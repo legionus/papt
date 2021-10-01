@@ -1,7 +1,7 @@
 PROJECT = papt
 VERSION = 0.2.0
 
-PROGRAMS = papt
+PROGRAMS = papt papt-query
 MAN1PAGES = $(PROGRAMS:=.1)
 
 TARGETS = $(PROGRAMS) $(MAN1PAGES)
