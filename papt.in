@@ -13,6 +13,7 @@ use AptPkg::Config '$_config';
 use Getopt::Long qw/ :config bundling require_order pass_through /;
 use WWW::Curl::Easy;
 use WWW::Curl::Multi;
+use Data::Dumper;
 
 my $apt_dir_archives = '';
 my $apt_dir_downloads = '';
@@ -419,6 +420,8 @@ while (<$fh>) {
 	}
 }
 close $fh;
+
+print "\n", Dumper(\%info) if $verbose >= 3;
 
 my $everything = 0;
 foreach my $key (qw/ upgrade downgrade install re-install replace remove /) {
