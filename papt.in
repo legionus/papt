@@ -87,6 +87,10 @@ sub download_libcurl {
 
 	my %active;
 	my $queue = 0;
+	my $needed = 0;
+	my $received = 0;
+	my $total = @missing_by_size;
+	my $total_sz = length($total);
 
 	while (@missing_by_size || $queue > 0) {
 		while (@missing_by_size && $queue < $parallel) {
@@ -94,7 +98,9 @@ sub download_libcurl {
 			my $url =  $files->{$num}->{url};
 			my $filename = "$apt_dir_downloads/$files->{$num}->{name}";
 
-			say "> Download: $url" if $verbose;
+			$needed++;
+
+			printf "[%" . $total_sz . "d/%d] %-11s: %s\n", $needed, $total, "Downloading", $url;
 
 			open my $fh, '>', $filename or
 				die "Can't open: $filename: $!";
@@ -122,8 +128,9 @@ sub download_libcurl {
 
 		while (my ($id, $value) = $curlm->info_read) {
 			$id--;
+			$received++;
 
-			say "* Received: $active{$id}->{url}";
+			printf "(%" . $total_sz . "d/%d) %-11s: %s\n", $received, $total, "Received", $active{$id}->{url} if $verbose;
 
 			close $active{$id}->{out};
 			delete $active{$id}->{curl};
