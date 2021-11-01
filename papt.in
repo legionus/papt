@@ -174,11 +174,18 @@ sub checksums {
 		SWITCH: {
 			$_ = $meta->{hash};
 
-			if (/^(MD5|MD5SUM):/i) {
+			if (/^(MD5|MD5SUM):(.*)$/i) {
+				$_ = $2;
 				last SWITCH;
 			}
-			if (/^(SHA1|SHA256|SHA512):/i) {
+			if (/^(SHA1|SHA256|SHA512):(.*)$/i) {
 				$algo = uc($1);
+				$_ = $2;
+				last SWITCH;
+			}
+			if (/^(BLAKE2b):(.*)$/) {
+				$algo = 'blake2b_512';
+				$_ = $2;
 				last SWITCH;
 			}
 			if (/^([^:]+):.*/) {
