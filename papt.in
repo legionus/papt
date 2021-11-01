@@ -402,7 +402,7 @@ while (<$fh>) {
 			last SWITCH;
 		}
 
-		next unless /^'(?<url>[^']+)' (?<name>\S+) (?<size>\d+) (?<hash>[A-Fa-f0-9]+)$/;
+		next unless /^'(?<url>[^']+)' (?<name>\S+) (?<size>\d+) (?<hash>(\S+:)?[A-Fa-f0-9]+)$/;
 
 		last SWITCH if $+{'url'} =~ /^file:/;
 		$+{'url'} =~ s/^copy:/file:/;
