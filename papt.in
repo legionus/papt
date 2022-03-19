@@ -216,6 +216,7 @@ sub confirmation {
 
 	print "Do you want to continue? [Y/n] ";
 	my $answer = <STDIN>;
+	$answer = 'n' unless defined $answer;
 	chomp $answer;
 
 	if (length $answer > 0 and lc $answer ne "y") {
