@@ -5,6 +5,7 @@ use strict;
 use warnings;
 
 use Text::Wrap;
+use Term::ANSIColor;
 use Errno;
 use Fcntl qw/ :flock /;
 use Crypt::Digest qw/ digest_file_hex /;
@@ -229,20 +230,46 @@ sub display_lists {
 	my ($info) = @_;
 
 	my %desc = (
-		'downgrade-list' => "\nThe following packages will be DOWNGRADED:",
-		'essential-list' => "\nWARNING: The following essential packages will be removed\nThis should NOT be done unless you know exactly what you are doing!",
-		'extra-list'     => "\nThe following extra packages will be installed:",
-		'hold-list'      => "\nThe following held packages will be changed:",
-		'install-list'   => "\nThe following NEW packages will be installed:",
-		'keep-list'      => "\nThe following packages have been kept back:",
-		'remove-list'    => "\nThe following packages will be REMOVED:",
-		'upgrade-list'   => "\nThe following packages will be upgraded:",
+		'downgrade-list' => {
+			'msg'   => "\nThe following packages will be DOWNGRADED:",
+			'color' => ''
+		},
+		'essential-list' => {
+			'msg'   => "\nWARNING: The following essential packages will be removed\nThis should NOT be done unless you know exactly what you are doing!",
+			'color' => ''
+		},
+		'extra-list'     => {
+			'msg' => "\nThe following extra packages will be installed:",
+			'color' => ''
+		},
+		'hold-list'      => {
+			'msg' => "\nThe following held packages will be changed:",
+			'color' => ''
+		},
+		'install-list'   => {
+			'msg' => "\nThe following NEW packages will be installed:",
+			'color' => 'bright_green'
+		},
+		'keep-list'      => {
+			'msg' => "\nThe following packages have been kept back:",
+			'color' => ''
+		},
+		'remove-list'    => {
+			'msg' => "\nThe following packages will be REMOVED:",
+			'color' => 'bright_red'
+		},
+		'upgrade-list'   => {
+			'msg' => "\nThe following packages will be upgraded:",
+			'color' => 'yellow'
+		}
 	);
 
 	foreach my $key (qw/ downgrade-list essential-list extra-list hold-list install-list keep-list remove-list upgrade-list /) {
 		next unless @{$info->{$key}};
-		say $desc{$key};
+		say $desc{$key}->{msg};
+		print color($desc{$key}->{color}) if length $desc{$key}->{color};
 		say wrap "\t", "\t", join " ", @{$info->{$key}};
+		print color('reset') if length $desc{$key}->{color};
 	}
 	say "";
 }
@@ -258,7 +285,7 @@ sub display_summary {
 	$summary .= ", $info->{'replace'} replaced"        if $info->{'replace'};
 	$summary .= ", $info->{'remove'} removed"          if $info->{'remove'};
 
-	say $summary;
+	say colored(['bold white'], $summary);
 	say "";
 
 	say "Need to get ", format_bytes($info->{'total-size'}), " of archives.";
