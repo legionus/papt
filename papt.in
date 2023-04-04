@@ -23,7 +23,7 @@ my $apt_dir_downloads = '';
 our $verbose = 0;
 our $parallel = 5;
 our $confirmed = 0;
-our $download_method = 'libcurl';
+our $download_method = 'curl';
 
 our $winsize = '';
 
