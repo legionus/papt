@@ -1,5 +1,5 @@
 PROJECT = papt
-VERSION = 0.5.0
+VERSION = 0.5.1
 
 PROGRAMS = papt papt-query
 MAN1PAGES = $(PROGRAMS:=.1)
